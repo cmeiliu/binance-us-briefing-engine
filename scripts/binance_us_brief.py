@@ -904,32 +904,100 @@ def find_asset_context(asset: Optional[str], snapshot: Dict[str, Any], watch_ins
     return None
 
 
+def event_type_from_title(title: str) -> str:
+    lowered = title.lower()
+    if any(word in lowered for word in ["hack", "exploit", "breach", "security threat", "security"]):
+        return "security_risk"
+    if any(word in lowered for word in ["approval", "etf", "greenlight", "license"]):
+        return "approval"
+    if any(word in lowered for word in ["launch", "rolls out", "rollout", "release", "upgrade", "mainnet"]):
+        return "product_launch"
+    if any(word in lowered for word in ["partnership", "integrates", "integration", "adoption", "joins"]):
+        return "adoption"
+    if any(word in lowered for word in ["lawsuit", "probe", "investigation", "sec", "charges"]):
+        return "regulatory_risk"
+    if any(word in lowered for word in ["price of", "current price", "forecast", "prediction", "better hold"]):
+        return "narrative_only"
+    return "general_news"
+
+
+def story_for_asset(asset: Optional[str], news_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if asset:
+        for item in news_items:
+            if item.get("asset") == asset:
+                return item
+    return news_items[0] if news_items else None
+
+
+def event_outcome_frame(asset: str, story: Optional[Dict[str, Any]], asset_ctx: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    if not story:
+        price_ref = f" at {format_price(asset_ctx['price'])}" if asset_ctx and asset_ctx.get("price") else ""
+        return (
+            f"If the setup keeps improving, {asset}{price_ref} can still justify attention, especially if the market keeps confirming the move.",
+            "Patience makes sense if the move is not tied to a concrete catalyst yet and you want one more session of confirmation.",
+        )
+
+    event_type = event_type_from_title(story["title"])
+    title = story["title"]
+    price_ref = f" at {format_price(asset_ctx['price'])}" if asset_ctx and asset_ctx.get("price") else ""
+
+    if event_type == "approval":
+        return (
+            f"The bull case is that `{title}` signals a real adoption or access unlock for {asset}{price_ref}, which could keep flows and attention elevated.",
+            f"The patient case is that approval-style headlines often get priced in quickly, so waiting to see whether {asset} holds the move is defensible.",
+        )
+    if event_type == "product_launch":
+        return (
+            f"The bull case is that `{title}` points to a real product or network improvement for {asset}{price_ref}, which can strengthen the story if users care.",
+            f"The patient case is that launch headlines do not always translate into demand right away, so waiting for follow-through is reasonable.",
+        )
+    if event_type == "adoption":
+        return (
+            f"The bull case is that `{title}` could expand real usage or distribution for {asset}{price_ref}, which is the kind of event that can matter beyond one day.",
+            f"The patient case is that partnership and adoption headlines are often vague, so it is fair to wait for evidence that the market treats it as meaningful.",
+        )
+    if event_type == "security_risk":
+        return (
+            f"The bull case is limited here: if `{title}` proves contained, {asset}{price_ref} could stabilize once the fear clears.",
+            f"The patient case is stronger because security-driven headlines can keep repricing risk for longer than people expect.",
+        )
+    if event_type == "regulatory_risk":
+        return (
+            f"The bull case is that `{title}` turns out to be less damaging than feared and {asset}{price_ref} shrugs it off.",
+            f"The patient case is that regulatory headlines can stay messy for a while, so waiting for clarity is usually the cleaner choice.",
+        )
+    if event_type == "narrative_only":
+        return (
+            f"The bull case is mostly sentiment-driven: `{title}` can keep {asset}{price_ref} in the conversation if traders lean into the narrative.",
+            f"The patient case is that this looks more like commentary than a catalyst, so waiting for a real event is the safer interpretation.",
+        )
+    return (
+        f"The bull case is that `{title}` changes how the market is thinking about {asset}{price_ref}, and the move keeps building.",
+        f"The patient case is that the headline may fade quickly, so waiting for price and volume to confirm the story is valid.",
+    )
+
+
 def build_decision_frame(
     suggested_action: Dict[str, Any],
     snapshot: Dict[str, Any],
     watch_insights: List[Dict[str, Any]],
     latest_deposit_age: Optional[int],
+    news_items: List[Dict[str, Any]],
 ) -> Optional[Dict[str, str]]:
     intent = suggested_action.get("intent")
     asset = suggested_action.get("params", {}).get("asset")
     asset_ctx = find_asset_context(asset, snapshot, watch_insights)
+    related_story = story_for_asset(asset, news_items)
 
     if intent == "open_portfolio_risk" and asset_ctx:
+        bull_case, patient_case = event_outcome_frame(asset_ctx["asset"], related_story, asset_ctx)
         return {
             "title": f"What should you do about {asset_ctx['asset']}?",
-            "bull_case": f"If you still believe the trend is intact, {asset_ctx['asset']} at {format_price(asset_ctx['price'])} is still carrying your account and may deserve to stay oversized.",
-            "patient_case": f"If you would be uncomfortable with one name driving this much risk, patience means trimming nothing impulsively and deciding your max position size first.",
+            "bull_case": bull_case,
+            "patient_case": f"{patient_case} If you would be uncomfortable with one name driving this much risk, decide your max position size first.",
         }
     if intent in {"open_asset", "open_watchlist"} and asset_ctx:
-        bull_bits = [f"{asset_ctx['asset']} is trading at {format_price(asset_ctx['price'])}"]
-        if asset_ctx.get("change_pct") is not None:
-            bull_bits.append(f"{asset_ctx['change_pct']:+.1f}% today")
-        if asset_ctx.get("change_pct_7d") is not None:
-            bull_bits.append(f"{asset_ctx['change_pct_7d']:+.1f}% vs 7d")
-        bull_line = ", ".join(bull_bits) + "."
-        if asset_ctx.get("is_30d_high"):
-            bull_line += " Momentum is strong enough that it is testing a 30-day high."
-        patient_line = "Patience makes sense if this feels extended, the move is mostly headline-driven, or you want to see whether it can hold up for another session."
+        bull_line, patient_line = event_outcome_frame(asset_ctx["asset"], related_story, asset_ctx)
         return {
             "title": f"What should you do about {asset_ctx['asset']}?",
             "bull_case": bull_line,
@@ -939,10 +1007,12 @@ def build_decision_frame(
         cash_line = f"You have about {format_price(snapshot['cash_value'])} available." if snapshot.get("cash_value", 0.0) > 0 else "You have room to get prepared."
         if latest_deposit_age is not None:
             cash_line = cash_line[:-1] + f", and your last deposit was about {latest_deposit_age} day(s) ago."
+        story = news_items[0] if news_items else None
+        catalyst_line = f" Today's key event is `{story['title']}`." if story else ""
         return {
             "title": "What should you do about your cash?",
-            "bull_case": f"{cash_line} If you already have conviction in a setup, acting while the market is moving gives that cash a job.",
-            "patient_case": "Patience makes sense if nothing on your list has actually improved, or if you would just be chasing a move because it feels urgent.",
+            "bull_case": f"{cash_line}{catalyst_line} If that event strengthens a setup you already believe in, acting now gives the cash a reason to exist.",
+            "patient_case": "Patience makes sense if the headline is only noise, or if the likely outcome still does not improve any asset on your list.",
         }
     return {
         "title": "What should you do about this?",
@@ -1219,7 +1289,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
     else:
         headline = choose_headline(snapshot, trade_summary, watch_insights, tone, limited_mode)
 
-    decision_frame = build_decision_frame(suggested_action, snapshot, watch_insights, latest_deposit_age)
+    decision_frame = build_decision_frame(suggested_action, snapshot, watch_insights, latest_deposit_age, news_items)
 
     personalization = {"based_on": [], "user_angle": None}
     if context["balances"]:
