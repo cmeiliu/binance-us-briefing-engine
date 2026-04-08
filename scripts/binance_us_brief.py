@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 BASE_URL = "https://api.binance.us"
 DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine.json"
+DEFAULT_STATE_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine-state.json"
 DEFAULT_QUOTE_ASSETS = ["USD", "USDT", "USDC", "BTC"]
 DEFAULT_RECENT_DAYS = 30
 DEFAULT_ALERT_THRESHOLD_PCT = 5.0
@@ -57,6 +58,7 @@ ASSET_ALIASES = {
     "HBAR": ["Hedera", "HBAR"],
     "SHIB": ["Shiba Inu", "SHIB"],
 }
+MARKET_CONTEXT_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 class BinanceUSError(RuntimeError):
@@ -152,6 +154,20 @@ def load_config(path_str: str) -> Dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise BinanceUSError(f"Invalid config JSON in {path}: {exc}") from exc
+
+
+def load_state(path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_state(state: Dict[str, Any], path: Path = DEFAULT_STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
 def load_secret_from_env_or_files() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -306,6 +322,64 @@ def seven_day_change_pct(symbol: str) -> Optional[float]:
     return ((end - start) / start) * 100.0
 
 
+def market_context(symbol: Optional[str]) -> Dict[str, Any]:
+    if not symbol:
+        return {}
+    if symbol in MARKET_CONTEXT_CACHE:
+        return MARKET_CONTEXT_CACHE[symbol]
+    try:
+        klines = fetch_klines(symbol, interval="1d", limit=31)
+    except BinanceUSError:
+        MARKET_CONTEXT_CACHE[symbol] = {}
+        return {}
+    if len(klines) < 8:
+        MARKET_CONTEXT_CACHE[symbol] = {}
+        return {}
+    closes = [safe_float(item[4]) for item in klines]
+    current = closes[-1]
+    week_ago = closes[-8] if len(closes) >= 8 else 0.0
+    prior_week_close = closes[-15] if len(closes) >= 15 else 0.0
+    month_high = max(closes[-30:]) if len(closes) >= 30 else max(closes)
+    month_low = min(closes[-30:]) if len(closes) >= 30 else min(closes)
+    current_7d = ((current - week_ago) / week_ago) * 100.0 if week_ago > 0 else None
+    prior_7d = ((week_ago - prior_week_close) / prior_week_close) * 100.0 if prior_week_close > 0 else None
+    high_distance_pct = ((current - month_high) / month_high) * 100.0 if month_high > 0 else None
+    low_distance_pct = ((current - month_low) / month_low) * 100.0 if month_low > 0 else None
+    context = {
+        "change_pct_7d": current_7d,
+        "change_pct_prior_7d": prior_7d,
+        "month_high": month_high,
+        "month_low": month_low,
+        "is_30d_high": month_high > 0 and abs(current - month_high) / month_high < 0.005,
+        "high_distance_pct": high_distance_pct,
+        "low_distance_pct": low_distance_pct,
+    }
+    MARKET_CONTEXT_CACHE[symbol] = context
+    return context
+
+
+def format_price_quantity(amount: float, asset: str) -> str:
+    if asset == "BTC":
+        return f"{amount:.4f} BTC"
+    if amount >= 1000:
+        return f"{amount:,.0f} {asset}"
+    if amount >= 1:
+        return f"{amount:,.2f} {asset}"
+    return f"{amount:,.4f} {asset}"
+
+
+def dedupe_lines(lines: List[str]) -> List[str]:
+    seen = set()
+    deduped = []
+    for line in lines:
+        key = " ".join(line.split()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return deduped
+
+
 def asset_search_term(asset: str) -> str:
     return ASSET_SEARCH_TERMS.get(asset, f"{asset} crypto")
 
@@ -448,7 +522,9 @@ def portfolio_snapshot(balances: List[Dict[str, Any]], by_base: Dict[str, List[D
                 price = safe_float(tickers[symbol].get("lastPrice"))
         usd_value = total * price
         change_pct = safe_float(tickers[symbol].get("priceChangePercent")) if symbol and symbol in tickers else 0.0
-        week_change_pct = seven_day_change_pct(symbol) if symbol else None
+        context = market_context(symbol)
+        week_change_pct = context.get("change_pct_7d")
+        prior_week_change_pct = context.get("change_pct_prior_7d")
         contribution = usd_value * (change_pct / 100.0)
         week_contribution = usd_value * ((week_change_pct or 0.0) / 100.0)
         holdings.append(
@@ -460,8 +536,11 @@ def portfolio_snapshot(balances: List[Dict[str, Any]], by_base: Dict[str, List[D
                 "usd_value": usd_value,
                 "change_pct_24h": change_pct,
                 "change_pct_7d": week_change_pct,
+                "change_pct_prior_7d": prior_week_change_pct,
                 "contribution_24h": contribution,
                 "contribution_7d": week_contribution,
+                "is_30d_high": context.get("is_30d_high", False),
+                "high_distance_pct": context.get("high_distance_pct"),
             }
         )
         total_value += usd_value
@@ -533,12 +612,16 @@ def find_watchlist_insights(watchlist: List[str], by_base: Dict[str, List[Dict[s
             continue
         change = safe_float(tickers[symbol].get("priceChangePercent"))
         price = safe_float(tickers[symbol].get("lastPrice"))
-        week_change = seven_day_change_pct(symbol)
+        context = market_context(symbol)
+        week_change = context.get("change_pct_7d")
+        prior_week_change = context.get("change_pct_prior_7d")
         ratio = infer_volume_ratio(symbol)
         summary = f"{asset} {format_price(price)} ({change:+.1f}% 24h"
         if week_change is not None:
             summary += f", {week_change:+.1f}% vs 7d"
         summary += ")."
+        if context.get("is_30d_high"):
+            summary += " It is pressing a 30-day high."
         if ratio and ratio >= 1.8:
             summary += f" Hourly volume is {ratio:.1f}x baseline."
         insights.append(
@@ -547,8 +630,11 @@ def find_watchlist_insights(watchlist: List[str], by_base: Dict[str, List[Dict[s
                 "symbol": symbol,
                 "change_pct": change,
                 "change_pct_7d": week_change,
+                "change_pct_prior_7d": prior_week_change,
                 "price": price,
                 "volume_ratio": ratio,
+                "is_30d_high": context.get("is_30d_high", False),
+                "high_distance_pct": context.get("high_distance_pct"),
                 "summary": summary,
             }
         )
@@ -660,6 +746,51 @@ def fetch_news_context(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], 
     return scored[:news_limit]
 
 
+def held_assets(snapshot: Dict[str, Any]) -> List[str]:
+    return [item["asset"] for item in snapshot.get("holdings", []) if item.get("usd_value", 0.0) > 1 and item["asset"] not in {"USD", "USDT", "USDC"}]
+
+
+def watchlist_gap_insights(snapshot: Dict[str, Any], watch_insights: List[Dict[str, Any]]) -> List[str]:
+    held = set(held_assets(snapshot))
+    prompts = []
+    for insight in watch_insights:
+        if insight["asset"] in held:
+            continue
+        if insight["change_pct"] >= 4 or (insight.get("change_pct_7d") or 0) >= 8 or insight.get("is_30d_high"):
+            week = f" and {insight['change_pct_7d']:+.1f}% this week" if insight.get("change_pct_7d") is not None else ""
+            prompts.append(f"{insight['asset']} is up {insight['change_pct']:+.1f}% today{week}, and you have none. Worth a look?")
+    return prompts[:1]
+
+
+def idle_cash_story(snapshot: Dict[str, Any], watch_insights: List[Dict[str, Any]]) -> Optional[str]:
+    if snapshot["cash_ratio"] < 0.2 or snapshot["cash_value"] <= 0:
+        return None
+    if not watch_insights:
+        return f"You have about {format_price(snapshot['cash_value'])} sitting idle in cash-like balances."
+    anchor = watch_insights[0]
+    units = snapshot["cash_value"] / anchor["price"] if anchor.get("price") else 0.0
+    return (
+        f"You have about {format_price(snapshot['cash_value'])} sitting idle. At {anchor['asset']}'s current price, "
+        f"that is roughly {format_price_quantity(units, anchor['asset'])}."
+    )
+
+
+def first_run_hook(snapshot: Dict[str, Any], watch_insights: List[Dict[str, Any]], state: Dict[str, Any], limited_mode: bool) -> Optional[str]:
+    if state.get("has_run"):
+        return None
+    anchor = watch_insights[0] if watch_insights else snapshot.get("top_asset")
+    if not anchor:
+        return None
+    asset = anchor["asset"]
+    day_move = anchor.get("change_pct", anchor.get("change_pct_24h", 0.0))
+    cash_story = idle_cash_story(snapshot, watch_insights)
+    if cash_story:
+        return f"First look: yesterday {asset} moved {day_move:+.1f}% while your cash sat on the sidelines. {cash_story}"
+    if limited_mode:
+        return f"First look: yesterday {asset} moved {day_move:+.1f}%. This brief exists to make sure you do not miss the next move blind."
+    return f"First look: yesterday {asset} moved {day_move:+.1f}%. This is the kind of move this brief is supposed to catch early."
+
+
 def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], news_items: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     matters: List[str] = []
     news: List[str] = []
@@ -675,8 +806,9 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
             worst_week = f", {worst['change_pct_7d']:+.1f}% vs 7d" if worst.get("change_pct_7d") is not None else ""
             matters.append(f"{worst['asset']} is your weakest contributor today at {format_price(worst['price'])} ({worst['change_pct_24h']:+.1f}% 24h{worst_week}).")
 
-    if snapshot["cash_ratio"] >= 0.2:
-        matters.append(f"About {snapshot['cash_ratio'] * 100:.0f}% of your account is in cash-like balances, so you have dry powder.")
+    cash_story = idle_cash_story(snapshot, watch_insights)
+    if cash_story:
+        matters.append(cash_story)
     if snapshot["concentration"] >= 0.55 and snapshot["top_asset"]:
         matters.append(f"{snapshot['top_asset']['asset']} is roughly {snapshot['concentration'] * 100:.0f}% of your account, so concentration risk is elevated.")
 
@@ -688,7 +820,10 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
             matters.append(f"{insight['asset']} has real participation behind the move at {format_price(insight['price'])} with {insight['volume_ratio']:.1f}x hourly volume.")
         else:
             week = f", {insight['change_pct_7d']:+.1f}% vs 7d" if insight.get("change_pct_7d") is not None else ""
-            matters.append(f"{insight['asset']} is one of the strongest names on your watchlist at {format_price(insight['price'])} ({insight['change_pct']:+.1f}% 24h{week}).")
+            high_note = " It is at a 30-day high." if insight.get("is_30d_high") else ""
+            matters.append(f"{insight['asset']} is one of the strongest names on your watchlist at {format_price(insight['price'])} ({insight['change_pct']:+.1f}% 24h{week}).{high_note}")
+
+    matters.extend(watchlist_gap_insights(snapshot, watch_insights))
 
     for story in news_items[:2]:
         news.append(f"{story['asset']}: {story['title']} {story['why_this_matters']}")
@@ -697,33 +832,63 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
 
     if not ignore and news_items:
         ignore.append("Ignore duplicate price-recap headlines unless they point to a real catalyst.")
-    return {"what_matters": matters[:4], "news_that_matters": news[:2], "probably_ignore": ignore[:2]}
+    return {
+        "what_matters": dedupe_lines(matters)[:5],
+        "news_that_matters": dedupe_lines(news)[:2],
+        "probably_ignore": dedupe_lines(ignore)[:2],
+    }
 
 
 def choose_suggested_action(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], latest_deposit_age: Optional[int], limited_mode: bool) -> Dict[str, Any]:
     if snapshot["concentration"] >= 0.6 and snapshot["top_asset"]:
         asset = snapshot["top_asset"]["asset"]
-        return {"label": f"Review {asset} concentration", "intent": "open_portfolio_risk", "params": {"asset": asset}}
+        return {
+            "label": f"{asset} now drives most of your risk. Open Binance.US and decide whether you still want that much riding on one name.",
+            "intent": "open_portfolio_risk",
+            "params": {"asset": asset, "url": "https://www.binance.us/"},
+        }
     if snapshot["cash_ratio"] >= 0.2:
         for insight in watch_insights:
             if insight.get("change_pct_7d") is not None and insight["change_pct"] > 0 and insight["change_pct_7d"] > 5:
                 return {
-                    "label": f"You have {snapshot['cash_ratio'] * 100:.0f}% cash. Recheck your {insight['asset']} entry thesis.",
+                    "label": f"You have {format_price(snapshot['cash_value'])} in cash. {insight['asset']} is pressing the tape here, so this is the moment to decide whether you want in.",
                     "intent": "open_asset",
-                    "params": {"asset": insight["asset"]},
+                    "params": {"asset": insight["asset"], "url": "https://www.binance.us/"},
                 }
-        return {"label": f"You have {snapshot['cash_ratio'] * 100:.0f}% cash. Review deployment options.", "intent": "open_convert_or_spot"}
+        return {
+            "label": f"You have {format_price(snapshot['cash_value'])} idle. Open Binance.US and decide whether to deploy it or keep waiting on purpose.",
+            "intent": "open_convert_or_spot",
+            "params": {"url": "https://www.binance.us/"},
+        }
     for insight in watch_insights:
+        if insight.get("is_30d_high"):
+            return {
+                "label": f"{insight['asset']} is at a 30-day high. Open Binance.US and check whether your limit orders still make sense.",
+                "intent": "open_asset",
+                "params": {"asset": insight["asset"], "url": "https://www.binance.us/"},
+            }
         if insight["volume_ratio"] and insight["volume_ratio"] >= 1.8:
-            return {"label": f"{insight['asset']} is moving on real volume. Revisit the setup.", "intent": "open_asset", "params": {"asset": insight["asset"]}}
+            return {
+                "label": f"{insight['asset']} is moving on real volume. Open Binance.US and decide whether this setup still deserves your attention.",
+                "intent": "open_asset",
+                "params": {"asset": insight["asset"], "url": "https://www.binance.us/"},
+            }
     if limited_mode and watch_insights:
-        return {"label": f"Open {watch_insights[0]['asset']} and compare it with the 7-day trend.", "intent": "open_asset", "params": {"asset": watch_insights[0]["asset"]}}
+        return {
+            "label": f"Open Binance.US and compare {watch_insights[0]['asset']} with its 7-day trend before this move gets away from you.",
+            "intent": "open_asset",
+            "params": {"asset": watch_insights[0]["asset"], "url": "https://www.binance.us/"},
+        }
     if trade_summary:
         asset = next(iter(trade_summary.keys()))
-        return {"label": f"Check whether {asset} still fits your recent trade thesis.", "intent": "open_asset", "params": {"asset": asset}}
+        return {
+            "label": f"Open Binance.US and check whether {asset} still fits the reason you traded it in the first place.",
+            "intent": "open_asset",
+            "params": {"asset": asset, "url": "https://www.binance.us/"},
+        }
     if latest_deposit_age is None:
-        return {"label": "Review funding options", "intent": "open_funding"}
-    return {"label": "Review your Binance.US account", "intent": "open_account_overview"}
+        return {"label": "Open Binance.US and review funding options before the next move finds you unprepared.", "intent": "open_funding", "params": {"url": "https://www.binance.us/"}}
+    return {"label": "Open Binance.US and make one intentional decision instead of waiting passively.", "intent": "open_account_overview", "params": {"url": "https://www.binance.us/"}}
 
 
 def choose_headline(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], tone: str, limited_mode: bool) -> str:
@@ -786,18 +951,26 @@ def weekly_reset_sections(snapshot: Dict[str, Any], watch_insights: List[Dict[st
     if holdings:
         best = max(holdings, key=lambda item: item.get("contribution_7d", 0.0))
         worst = min(holdings, key=lambda item: item.get("contribution_7d", 0.0))
+        delta_text = ""
+        if best.get("change_pct_prior_7d") is not None:
+            delta = best["change_pct_7d"] - best["change_pct_prior_7d"]
+            delta_text = f" That is {delta:+.1f} points versus the prior week."
         matters.append(
-            f"Your account is roughly {snapshot['week_change_pct']:+.1f}% vs 7d, with {best['asset']} contributing the most at {format_price(best['price'])} ({best['change_pct_7d']:+.1f}% vs 7d)."
+            f"Your account is roughly {snapshot['week_change_pct']:+.1f}% vs 7d, with {best['asset']} contributing the most at {format_price(best['price'])} ({best['change_pct_7d']:+.1f}% vs 7d).{delta_text}"
         )
         if worst["asset"] != best["asset"]:
             matters.append(
                 f"{worst['asset']} was the biggest weekly drag at {format_price(worst['price'])} ({worst['change_pct_7d']:+.1f}% vs 7d)."
             )
+        if snapshot["week_change_value"]:
+            matters.append(f"Week over week, your book moved about {format_price(snapshot['week_change_value'])}.")
     if snapshot["cash_ratio"] >= 0.2:
         matters.append(f"You still have about {snapshot['cash_ratio'] * 100:.0f}% in cash-like balances, which leaves room to act without selling.")
     for insight in watch_insights[:1]:
         if insight.get("change_pct_7d") is not None:
-            matters.append(f"{insight['asset']} is the watchlist name with the strongest weekly follow-through at {insight['change_pct_7d']:+.1f}% vs 7d.")
+            prior = insight.get("change_pct_prior_7d")
+            compare = f" versus {prior:+.1f}% last week" if prior is not None else ""
+            matters.append(f"{insight['asset']} is the watchlist name with the strongest weekly follow-through at {insight['change_pct_7d']:+.1f}% vs 7d{compare}.")
 
     for story in news_items[:2]:
         news.append(f"{story['asset']}: {story['title']} {story['why_this_matters']}")
@@ -807,28 +980,35 @@ def weekly_reset_sections(snapshot: Dict[str, Any], watch_insights: List[Dict[st
     if not ignore:
         ignore.append("Ignore weekly leaderboard chatter that does not change your thesis or your position sizing.")
 
-    return {"what_matters": matters[:4], "news_that_matters": news[:2], "probably_ignore": ignore[:2]}
+    return {
+        "what_matters": dedupe_lines(matters)[:5],
+        "news_that_matters": dedupe_lines(news)[:2],
+        "probably_ignore": dedupe_lines(ignore)[:2],
+    }
 
 
 def render_text(payload: Dict[str, Any]) -> str:
     lines = [f"**{payload['title']}**", "", payload["headline"], ""]
+    if payload.get("first_run_hook"):
+        lines.append(f"_Heads up: {payload['first_run_hook']}_")
+        lines.append("")
     if payload.get("limited_mode"):
-        lines.append("_Limited mode: account credentials were not available, so this brief is market-only._")
+        lines.append("_Quick note: account credentials were not available, so this version is market-only._")
         lines.append("")
 
     sections = payload.get("sections", {})
     if sections.get("what_matters"):
-        lines.append("**What matters for you**")
+        lines.append("**What jumps out**")
         for item in sections["what_matters"]:
             lines.append(f"- {item}")
         lines.append("")
     if sections.get("news_that_matters"):
-        lines.append("**News that matters**")
+        lines.append("**Why it matters today**")
         for item in sections["news_that_matters"]:
             lines.append(f"- {item}")
         lines.append("")
     if sections.get("probably_ignore"):
-        lines.append("**Probably ignore**")
+        lines.append("**Ignore this noise**")
         for item in sections["probably_ignore"]:
             lines.append(f"- {item}")
         lines.append("")
@@ -838,16 +1018,16 @@ def render_text(payload: Dict[str, Any]) -> str:
             lines.append(f"- {label}: {item['summary']}")
         lines.append("")
     if payload.get("risk_note"):
-        lines.append(f"**Risk**  {payload['risk_note']}")
+        lines.append(f"**One risk to watch**  {payload['risk_note']}")
         lines.append("")
     if payload.get("suggested_action"):
-        lines.append(f"**Best next step**  {payload['suggested_action']['label']}")
+        lines.append(f"**What I would do next**  {payload['suggested_action']['label']}")
         lines.append("")
     lines.append("_Market information only. Not financial advice._")
     return trim_lines("\n".join(lines))
 
 
-def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, Any]:
+def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
     watchlist = normalize_watchlist(args.watchlist, config)
     quote_assets = parse_quote_assets(args.quote_assets, config)
     recent_days = int(config.get("recent_days", args.recent_days))
@@ -897,34 +1077,48 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
 
     latest_deposit_age = latest_fiat_deposit_age_days(context["fiat_deposits"])
     suggested_action = choose_suggested_action(snapshot, trade_summary, watch_insights, latest_deposit_age, limited_mode)
+    hook = first_run_hook(snapshot, watch_insights, state, limited_mode)
 
     if args.mode == "watchlist_brief":
         headline = f"Your watchlist is {tone.replace('_', ' ')}, with {watch_insights[0]['asset']} leading." if watch_insights else "Your watchlist has no active configured insights."
-        suggested_action = {"label": "Open watchlist", "intent": "open_watchlist"}
+        suggested_action = {"label": "Open Binance.US and decide whether your watchlist leader deserves a spot in the portfolio.", "intent": "open_watchlist", "params": {"url": "https://www.binance.us/"}}
         highlights = watch_insights[: args.limit] or highlights
     elif args.mode == "opportunity_alert":
         triggered = next((item for item in watch_insights if abs(item["change_pct"]) >= alert_threshold_pct or (item["volume_ratio"] and item["volume_ratio"] >= 1.8)), None)
         if triggered:
-            headline = f"{triggered['asset']} has moved into high-attention conditions on Binance.US."
+            headline = f"{triggered['asset']} just forced its way onto the screen at {format_price(triggered['price'])}."
             highlights = [{"type": "triggered_asset", "asset": triggered["asset"], "symbol": triggered["symbol"], "summary": triggered["summary"]}]
             for story in news_items:
                 if story["asset"] == triggered["asset"]:
                     highlights.append({"type": "news_context", "asset": story["asset"], "summary": f"Recent headline: {story['title']} {story['why_this_matters']}", "link": story["link"]})
                     break
-            suggested_action = {"label": f"Open {triggered['asset']}", "intent": "open_asset", "params": {"asset": triggered["asset"]}}
+            suggested_action = {
+                "label": f"{triggered['asset']} crossed your attention threshold. Open Binance.US (https://www.binance.us/) and check your limit orders now.",
+                "intent": "open_asset",
+                "params": {"asset": triggered["asset"], "url": "https://www.binance.us/"},
+            }
         else:
             headline = "No owned, watched, or recently traded asset crossed the configured alert threshold."
             suggested_action = {"label": "Review watchlist thresholds", "intent": "open_watchlist_settings"}
     elif args.mode == "funding_nudge":
+        dip_candidate = next((item for item in watch_insights if item["change_pct"] <= -5 or (item.get("change_pct_7d") or 0.0) <= -8), None)
         if latest_deposit_age is None:
             headline = "You do not appear to have a recent completed fiat deposit."
         else:
             headline = f"Your last completed fiat deposit appears to be about {latest_deposit_age} day(s) ago."
         if snapshot["cash_ratio"] >= 0.2:
             highlights.insert(0, {"type": "cash_status", "summary": f"You already have about {snapshot['cash_ratio'] * 100:.0f}% of your account in cash or cash-like balances."})
-            suggested_action = {"label": "Review cash deployment options", "intent": "open_convert_or_spot"}
+            suggested_action = {"label": f"You already have cash ready. Open Binance.US and decide whether to put it to work.", "intent": "open_convert_or_spot", "params": {"url": "https://www.binance.us/"}}
+        elif dip_candidate and (latest_deposit_age is None or latest_deposit_age >= 14):
+            headline = f"You have not deposited in {latest_deposit_age or 14}+ days, and {dip_candidate['asset']} is down {dip_candidate['change_pct']:+.1f}% today."
+            highlights.insert(0, {"type": "dip_nudge", "summary": f"{dip_candidate['asset']} is off {dip_candidate['change_pct']:+.1f}% today and {dip_candidate.get('change_pct_7d', 0.0):+.1f}% over 7d. This is when being ready matters."})
+            suggested_action = {
+                "label": f"Open Binance.US (https://www.binance.us/) and decide whether this dip deserves fresh capital.",
+                "intent": "open_funding",
+                "params": {"url": "https://www.binance.us/", "asset": dip_candidate["asset"]},
+            }
         else:
-            suggested_action = {"label": "Review funding options", "intent": "open_funding"}
+            suggested_action = {"label": "Open Binance.US and review funding options before the next setup appears.", "intent": "open_funding", "params": {"url": "https://www.binance.us/"}}
     elif args.mode == "weekly_reset":
         if snapshot["top_asset"]:
             headline = f"Over the last week, your account moved about {snapshot['week_change_pct']:+.1f}%, with {snapshot['top_asset']['asset']} still setting the tone."
@@ -952,7 +1146,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
             headline = f"{snapshot['top_asset']['asset']} is your largest position, and cash represents about {snapshot['cash_ratio'] * 100:.0f}% of your account."
         else:
             headline = "Portfolio brief unavailable because no non-zero balances were found."
-        suggested_action = {"label": "Review portfolio actions", "intent": "open_portfolio_actions"}
+        suggested_action = {"label": "Open Binance.US and make one deliberate portfolio decision now, not later.", "intent": "open_portfolio_actions", "params": {"url": "https://www.binance.us/"}}
     else:
         headline = choose_headline(snapshot, trade_summary, watch_insights, tone, limited_mode)
 
@@ -998,6 +1192,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
         },
         "sections": sections,
         "highlights": highlights[: args.limit],
+        "first_run_hook": hook,
         "risk_note": risk_note,
         "suggested_action": suggested_action,
         "watchlist": watchlist,
@@ -1015,8 +1210,14 @@ def main() -> int:
         return 0
 
     config = load_config(args.config)
-    payload = build_brief(args, config)
+    state = load_state()
+    payload = build_brief(args, config, state)
     rendered = render_text(payload)
+    state["has_run"] = True
+    state["last_generated_at"] = payload["generated_at"]
+    state["last_mode"] = payload["mode"]
+    state["last_watchlist"] = payload.get("watchlist", [])
+    save_state(state)
 
     if args.format == "json":
         print(json.dumps(payload, indent=2))

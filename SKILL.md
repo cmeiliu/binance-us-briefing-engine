@@ -23,6 +23,8 @@ The bundled script should prefer:
 - 24h plus 7-day framing over single-window commentary
 - ranked, de-duplicated news tied to held or watched assets
 - a concrete next step over generic portfolio CTA text
+- a conversational advisor tone over compliance-report wording
+- explicit watchlist gaps and idle-cash framing when those would prompt action
 
 ## Use This Skill For
 

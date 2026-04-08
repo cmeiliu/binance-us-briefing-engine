@@ -21,6 +21,7 @@ The goal is to produce a brief that explains what matters for a specific user, n
 - price-anchored summaries with 24h and 7-day context
 - portfolio-aware news ranking and de-duplicated asset headline search
 - Markdown-friendly text output for chat delivery
+- first-run hook, watchlist-gap prompts, and sharper action-oriented CTAs
 
 ## Install
 
