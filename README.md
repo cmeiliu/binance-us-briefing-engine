@@ -1,3 +1,25 @@
+# Deprecated: Binance.US Briefing Engine
+
+This repository is deprecated.
+
+Use the new Binance.US skill family repo instead:
+
+- [cmeiliu/binance-us-skills](https://github.com/cmeiliu/binance-us-skills)
+
+Preferred install path:
+
+```bash
+npx skills add cmeiliu/binance-us-skills --list --full-depth
+```
+
+For the updated briefing skill specifically:
+
+```bash
+npx skills add cmeiliu/binance-us-skills --skill binance-us-briefing-engine --full-depth
+```
+
+The remainder of this README is preserved below for historical reference.
+
 # Binance.US Briefing Engine
 
 `Binance.US Briefing Engine` is the headline skill in a Binance.US skill family for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:

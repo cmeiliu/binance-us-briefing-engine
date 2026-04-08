@@ -13,6 +13,28 @@ metadata:
 license: MIT
 ---
 
+# Deprecated: Binance.US Briefing Engine
+
+This repository is deprecated.
+
+Use the new skill-family repository instead:
+
+- `cmeiliu/binance-us-skills`
+
+Preferred install flow:
+
+```bash
+npx skills add cmeiliu/binance-us-skills --list --full-depth
+```
+
+To install the updated briefing skill:
+
+```bash
+npx skills add cmeiliu/binance-us-skills --skill binance-us-briefing-engine --full-depth
+```
+
+The content below is preserved only so existing installs keep functioning while users migrate.
+
 # Binance.US Briefing Engine
 
 Generate account-aware Binance.US briefings. This skill is only valuable when it ties the market back to the user's own account.
