@@ -29,6 +29,8 @@ The goal is to produce a brief that explains what matters for a specific user, n
 
 ### OpenClaw
 
+Important: this repo contains a skill family, not just one root skill. If you want to discover or install the companion `binance-us-asset-research` skill, use `--full-depth`.
+
 Local development:
 
 Prefer the default install behavior without `--copy` so your installed skill stays linked to the repo checkout and updates when you pull new commits.
@@ -43,22 +45,22 @@ From GitHub or for snapshot installs:
 npx skills add <github-owner>/<github-repo> -g --agent openclaw --yes --copy
 ```
 
-To refresh a copied or GitHub-installed skill later:
-
-```bash
-npx skills update
-```
-
-To discover the full skill family in this repo:
+From GitHub, if you want full skill-family discovery:
 
 ```bash
 npx skills add <github-owner>/<github-repo> --list --full-depth
 ```
 
-To install the companion research skill specifically:
+From GitHub, if you want to install a specific nested skill:
 
 ```bash
 npx skills add <github-owner>/<github-repo> -g --agent openclaw --yes --full-depth --skill binance-us-asset-research
+```
+
+To refresh a copied or GitHub-installed skill later:
+
+```bash
+npx skills update
 ```
 
 ### Codex
