@@ -2,7 +2,7 @@
 name: binance-us-briefing-engine
 description: Personalized Binance.US market, portfolio, and watchlist briefings using account balances, recent trading history, watchlists, market data, and recent news headlines tied to the user's relevant assets. Use when the user asks for a market summary, personalized crypto brief, portfolio update, funding nudge, watchlist recap, opportunity alert, or weekly reset for Binance.US.
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   author: Binance.US
   openclaw:
     skillKey: binance-us-briefing-engine
@@ -67,6 +67,12 @@ python3 scripts/binance_us_brief.py --mode watchlist_brief --watchlist BTC,ETH,S
 python3 scripts/binance_us_brief.py --mode opportunity_alert --alert-threshold-pct 5
 python3 scripts/binance_us_brief.py init-config
 ```
+
+## Install Behavior
+
+- For local development, prefer the default install behavior without `--copy` so OpenClaw uses a symlink and picks up local repo changes immediately.
+- For GitHub or copied installs, use `npx skills update` to pull the latest published version.
+- The rendered brief includes a version/update nudge for copied installs so stale snapshots are easier to spot.
 
 ## Credentials
 

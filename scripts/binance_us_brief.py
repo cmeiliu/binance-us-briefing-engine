@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 BASE_URL = "https://api.binance.us"
+SKILL_VERSION = "0.2.0"
 DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine.json"
 DEFAULT_STATE_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine-state.json"
 DEFAULT_QUOTE_ASSETS = ["USD", "USDT", "USDC", "BTC"]
@@ -1088,6 +1089,9 @@ def render_text(payload: Dict[str, Any]) -> str:
         lines.append(f"- Bull case: {frame['bull_case']}")
         lines.append(f"- Case for patience: {frame['patient_case']}")
         lines.append("")
+    if payload.get("version"):
+        lines.append(f"_Skill v{payload['version']}. If you installed from GitHub or with `--copy`, run `npx skills update` to refresh._")
+        lines.append("")
     lines.append("_Market information only. Not financial advice._")
     return trim_lines("\n".join(lines))
 
@@ -1243,6 +1247,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
     return {
         "mode": args.mode,
         "generated_at": iso_now(),
+        "version": SKILL_VERSION,
         "title": title_map[args.mode],
         "headline": headline,
         "market_tone": tone,

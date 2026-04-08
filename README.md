@@ -27,16 +27,24 @@ The goal is to produce a brief that explains what matters for a specific user, n
 
 ### OpenClaw
 
-Local path:
+Local development:
+
+Prefer the default install behavior without `--copy` so your installed skill stays linked to the repo checkout and updates when you pull new commits.
 
 ```bash
-npx skills add /path/to/binance-us-briefing-engine -g --agent openclaw --yes --copy
+npx skills add /path/to/binance-us-briefing-engine -g --agent openclaw --yes
 ```
 
-From GitHub after publishing:
+From GitHub or for snapshot installs:
 
 ```bash
 npx skills add <github-owner>/<github-repo> -g --agent openclaw --yes --copy
+```
+
+To refresh a copied or GitHub-installed skill later:
+
+```bash
+npx skills update
 ```
 
 ### Codex
@@ -70,6 +78,8 @@ python3 scripts/binance_us_brief.py --mode watchlist_brief --watchlist BTC,ETH,S
 ```
 
 This script is the shared execution layer for OpenClaw, Codex, and Claude Code.
+
+If you install from GitHub or with `--copy`, the rendered brief also includes a version/update reminder so users get nudged toward `npx skills update`.
 
 ## Credentials
 
