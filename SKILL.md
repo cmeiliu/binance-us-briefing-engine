@@ -17,6 +17,13 @@ license: MIT
 
 Generate account-aware Binance.US briefings. This skill is only valuable when it ties the market back to the user's own account.
 
+The bundled script should prefer:
+
+- price-anchored output over percent-only output
+- 24h plus 7-day framing over single-window commentary
+- ranked, de-duplicated news tied to held or watched assets
+- a concrete next step over generic portfolio CTA text
+
 ## Use This Skill For
 
 - "Give me a personalized market summary"

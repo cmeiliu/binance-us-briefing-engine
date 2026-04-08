@@ -40,6 +40,23 @@ ASSET_SEARCH_TERMS = {
     "LTC": "Litecoin",
     "BCH": "Bitcoin Cash",
 }
+ASSET_ALIASES = {
+    "BTC": ["Bitcoin", "BTC", "XBT"],
+    "ETH": ["Ethereum", "ETH"],
+    "SOL": ["Solana", "SOL"],
+    "AVAX": ["Avalanche", "AVAX"],
+    "DOGE": ["Dogecoin", "DOGE"],
+    "XRP": ["XRP", "Ripple"],
+    "ADA": ["Cardano", "ADA"],
+    "LINK": ["Chainlink", "LINK"],
+    "LTC": ["Litecoin", "LTC"],
+    "BCH": ["Bitcoin Cash", "BCH"],
+    "MATIC": ["Polygon", "MATIC", "POL"],
+    "SUI": ["Sui", "SUI"],
+    "APT": ["Aptos", "APT"],
+    "HBAR": ["Hedera", "HBAR"],
+    "SHIB": ["Shiba Inu", "SHIB"],
+}
 
 
 class BinanceUSError(RuntimeError):
@@ -65,6 +82,16 @@ def safe_float(value: Any, default: float = 0.0) -> float:
 
 def trim_lines(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def format_price(value: float) -> str:
+    if value >= 1000:
+        return f"${value:,.0f}"
+    if value >= 1:
+        return f"${value:,.2f}"
+    if value >= 0.01:
+        return f"${value:,.4f}"
+    return f"${value:,.6f}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,34 +292,83 @@ def infer_volume_ratio(symbol: str) -> Optional[float]:
     return latest / median_volume
 
 
+def seven_day_change_pct(symbol: str) -> Optional[float]:
+    try:
+        klines = fetch_klines(symbol, interval="1d", limit=8)
+    except BinanceUSError:
+        return None
+    if len(klines) < 2:
+        return None
+    start = safe_float(klines[0][1])
+    end = safe_float(klines[-1][4])
+    if start <= 0:
+        return None
+    return ((end - start) / start) * 100.0
+
+
 def asset_search_term(asset: str) -> str:
     return ASSET_SEARCH_TERMS.get(asset, f"{asset} crypto")
 
 
-def fetch_asset_news(asset: str, limit: int = 2) -> List[Dict[str, Any]]:
-    query = f"{asset_search_term(asset)} when:1d"
-    params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
-    url = f"{GOOGLE_NEWS_RSS}?{urllib.parse.urlencode(params)}"
-    xml_text = http_get_text(url, headers={"User-Agent": "Mozilla/5.0"})
-    root = ET.fromstring(xml_text)
+def news_queries_for_asset(asset: str) -> List[str]:
+    aliases = ASSET_ALIASES.get(asset, [asset_search_term(asset), asset])
+    queries = [
+        f"{aliases[0]} crypto when:2d",
+        f"{asset} crypto market when:2d",
+    ]
+    if len(aliases) > 1:
+        queries.append(f"{aliases[0]} OR {aliases[1]} crypto when:2d")
+    return queries
+
+
+def normalize_story_title(title: str) -> str:
+    lowered = title.lower()
+    for delimiter in (" - ", " | ", ":", "—"):
+        if delimiter in lowered:
+            lowered = lowered.split(delimiter, 1)[0]
+    return " ".join(lowered.split())
+
+
+def fetch_asset_news(asset: str, limit: int = 3) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
-    for item in root.findall("./channel/item")[:limit]:
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub_date = (item.findtext("pubDate") or "").strip()
-        source = ""
-        source_node = item.find("source")
-        if source_node is not None and source_node.text:
-            source = source_node.text.strip()
-        published_at = None
-        if pub_date:
-            try:
-                published_at = parsedate_to_datetime(pub_date).astimezone().isoformat(timespec="seconds")
-            except (TypeError, ValueError, OverflowError):
-                published_at = None
-        if title:
-            items.append({"asset": asset, "title": title, "link": link, "source": source or "Google News", "published_at": published_at})
-    return items
+    seen_titles = set()
+    for query in news_queries_for_asset(asset):
+        params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+        url = f"{GOOGLE_NEWS_RSS}?{urllib.parse.urlencode(params)}"
+        xml_text = http_get_text(url, headers={"User-Agent": "Mozilla/5.0"})
+        root = ET.fromstring(xml_text)
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
+            source = ""
+            source_node = item.find("source")
+            if source_node is not None and source_node.text:
+                source = source_node.text.strip()
+            published_at = None
+            if pub_date:
+                try:
+                    published_at = parsedate_to_datetime(pub_date).astimezone().isoformat(timespec="seconds")
+                except (TypeError, ValueError, OverflowError):
+                    published_at = None
+            if not title:
+                continue
+            title_key = normalize_story_title(title)
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+            items.append(
+                {
+                    "asset": asset,
+                    "title": title,
+                    "link": link,
+                    "source": source or "Google News",
+                    "published_at": published_at,
+                }
+            )
+            if len(items) >= limit:
+                return items
+    return items[:limit]
 
 
 def fetch_account_context(
@@ -359,6 +435,7 @@ def portfolio_snapshot(balances: List[Dict[str, Any]], by_base: Dict[str, List[D
     holdings: List[Dict[str, Any]] = []
     total_value = 0.0
     cash_value = 0.0
+    week_change_value = 0.0
 
     for balance in balances:
         asset = balance["asset"]
@@ -371,16 +448,40 @@ def portfolio_snapshot(balances: List[Dict[str, Any]], by_base: Dict[str, List[D
                 price = safe_float(tickers[symbol].get("lastPrice"))
         usd_value = total * price
         change_pct = safe_float(tickers[symbol].get("priceChangePercent")) if symbol and symbol in tickers else 0.0
+        week_change_pct = seven_day_change_pct(symbol) if symbol else None
         contribution = usd_value * (change_pct / 100.0)
-        holdings.append({"asset": asset, "symbol": symbol, "amount": total, "price": price, "usd_value": usd_value, "change_pct_24h": change_pct, "contribution_24h": contribution})
+        week_contribution = usd_value * ((week_change_pct or 0.0) / 100.0)
+        holdings.append(
+            {
+                "asset": asset,
+                "symbol": symbol,
+                "amount": total,
+                "price": price,
+                "usd_value": usd_value,
+                "change_pct_24h": change_pct,
+                "change_pct_7d": week_change_pct,
+                "contribution_24h": contribution,
+                "contribution_7d": week_contribution,
+            }
+        )
         total_value += usd_value
+        week_change_value += week_contribution
         if asset in {"USD", "USDT", "USDC"}:
             cash_value += usd_value
 
     holdings.sort(key=lambda item: item["usd_value"], reverse=True)
     top_asset = holdings[0] if holdings else None
     concentration = (top_asset["usd_value"] / total_value) if top_asset and total_value > 0 else 0.0
-    return {"holdings": holdings, "total_value": total_value, "cash_value": cash_value, "cash_ratio": (cash_value / total_value) if total_value > 0 else 0.0, "top_asset": top_asset, "concentration": concentration}
+    return {
+        "holdings": holdings,
+        "total_value": total_value,
+        "cash_value": cash_value,
+        "cash_ratio": (cash_value / total_value) if total_value > 0 else 0.0,
+        "top_asset": top_asset,
+        "concentration": concentration,
+        "week_change_value": week_change_value,
+        "week_change_pct": ((week_change_value / total_value) * 100.0) if total_value > 0 else 0.0,
+    }
 
 
 def recent_trade_summary(recent_trades: Dict[str, List[Dict[str, Any]]], by_symbol: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -431,12 +532,27 @@ def find_watchlist_insights(watchlist: List[str], by_base: Dict[str, List[Dict[s
         if not symbol or symbol not in tickers:
             continue
         change = safe_float(tickers[symbol].get("priceChangePercent"))
+        price = safe_float(tickers[symbol].get("lastPrice"))
+        week_change = seven_day_change_pct(symbol)
         ratio = infer_volume_ratio(symbol)
-        summary = f"{asset} is {change:+.1f}% in 24h."
+        summary = f"{asset} {format_price(price)} ({change:+.1f}% 24h"
+        if week_change is not None:
+            summary += f", {week_change:+.1f}% vs 7d"
+        summary += ")."
         if ratio and ratio >= 1.8:
             summary += f" Hourly volume is {ratio:.1f}x baseline."
-        insights.append({"asset": asset, "symbol": symbol, "change_pct": change, "volume_ratio": ratio, "summary": summary})
-    insights.sort(key=lambda item: (abs(item["change_pct"]), item["volume_ratio"] or 0.0), reverse=True)
+        insights.append(
+            {
+                "asset": asset,
+                "symbol": symbol,
+                "change_pct": change,
+                "change_pct_7d": week_change,
+                "price": price,
+                "volume_ratio": ratio,
+                "summary": summary,
+            }
+        )
+    insights.sort(key=lambda item: (abs(item["change_pct"]), abs(item.get("change_pct_7d") or 0.0), item["volume_ratio"] or 0.0), reverse=True)
     return insights
 
 
@@ -474,6 +590,14 @@ def score_news_item(story: Dict[str, Any], snapshot: Dict[str, Any], trade_summa
     source = (story.get("source") or "").lower()
     if source in {"fortune", "bloomberg", "reuters", "coindesk", "cointelegraph", "the block", "mashable"}:
         score += 0.5
+    published_at = story.get("published_at")
+    if published_at:
+        try:
+            age_hours = (datetime.now().astimezone() - datetime.fromisoformat(published_at)).total_seconds() / 3600.0
+            if age_hours <= 12:
+                score += 0.5
+        except ValueError:
+            pass
     return score
 
 
@@ -544,10 +668,12 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
     holdings = [h for h in snapshot.get("holdings", []) if h["usd_value"] > 0]
     if holdings:
         best = max(holdings, key=lambda item: item["contribution_24h"])
-        matters.append(f"{best['asset']} is doing the most work in your account at {best['change_pct_24h']:+.1f}% over 24h.")
+        best_week = f", {best['change_pct_7d']:+.1f}% vs 7d" if best.get("change_pct_7d") is not None else ""
+        matters.append(f"{best['asset']} is doing the most work in your account at {format_price(best['price'])} ({best['change_pct_24h']:+.1f}% 24h{best_week}).")
         worst = min(holdings, key=lambda item: item["contribution_24h"])
         if worst["asset"] != best["asset"]:
-            matters.append(f"{worst['asset']} is your weakest contributor today at {worst['change_pct_24h']:+.1f}%.")
+            worst_week = f", {worst['change_pct_7d']:+.1f}% vs 7d" if worst.get("change_pct_7d") is not None else ""
+            matters.append(f"{worst['asset']} is your weakest contributor today at {format_price(worst['price'])} ({worst['change_pct_24h']:+.1f}% 24h{worst_week}).")
 
     if snapshot["cash_ratio"] >= 0.2:
         matters.append(f"About {snapshot['cash_ratio'] * 100:.0f}% of your account is in cash-like balances, so you have dry powder.")
@@ -559,9 +685,10 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
 
     for insight in watch_insights[:2]:
         if insight["volume_ratio"] and insight["volume_ratio"] >= 1.8:
-            matters.append(f"{insight['asset']} has real participation behind the move with {insight['volume_ratio']:.1f}x hourly volume.")
+            matters.append(f"{insight['asset']} has real participation behind the move at {format_price(insight['price'])} with {insight['volume_ratio']:.1f}x hourly volume.")
         else:
-            matters.append(f"{insight['asset']} is one of the strongest names on your watchlist at {insight['change_pct']:+.1f}% over 24h.")
+            week = f", {insight['change_pct_7d']:+.1f}% vs 7d" if insight.get("change_pct_7d") is not None else ""
+            matters.append(f"{insight['asset']} is one of the strongest names on your watchlist at {format_price(insight['price'])} ({insight['change_pct']:+.1f}% 24h{week}).")
 
     for story in news_items[:2]:
         news.append(f"{story['asset']}: {story['title']} {story['why_this_matters']}")
@@ -578,15 +705,22 @@ def choose_suggested_action(snapshot: Dict[str, Any], trade_summary: Dict[str, A
         asset = snapshot["top_asset"]["asset"]
         return {"label": f"Review {asset} concentration", "intent": "open_portfolio_risk", "params": {"asset": asset}}
     if snapshot["cash_ratio"] >= 0.2:
-        return {"label": "Review cash deployment options", "intent": "open_convert_or_spot"}
+        for insight in watch_insights:
+            if insight.get("change_pct_7d") is not None and insight["change_pct"] > 0 and insight["change_pct_7d"] > 5:
+                return {
+                    "label": f"You have {snapshot['cash_ratio'] * 100:.0f}% cash. Recheck your {insight['asset']} entry thesis.",
+                    "intent": "open_asset",
+                    "params": {"asset": insight["asset"]},
+                }
+        return {"label": f"You have {snapshot['cash_ratio'] * 100:.0f}% cash. Review deployment options.", "intent": "open_convert_or_spot"}
     for insight in watch_insights:
         if insight["volume_ratio"] and insight["volume_ratio"] >= 1.8:
-            return {"label": f"Revisit {insight['asset']} watchlist setup", "intent": "open_asset", "params": {"asset": insight["asset"]}}
+            return {"label": f"{insight['asset']} is moving on real volume. Revisit the setup.", "intent": "open_asset", "params": {"asset": insight["asset"]}}
     if limited_mode and watch_insights:
-        return {"label": f"Open {watch_insights[0]['asset']}", "intent": "open_asset", "params": {"asset": watch_insights[0]["asset"]}}
+        return {"label": f"Open {watch_insights[0]['asset']} and compare it with the 7-day trend.", "intent": "open_asset", "params": {"asset": watch_insights[0]["asset"]}}
     if trade_summary:
         asset = next(iter(trade_summary.keys()))
-        return {"label": f"Check {asset} against your recent trade", "intent": "open_asset", "params": {"asset": asset}}
+        return {"label": f"Check whether {asset} still fits your recent trade thesis.", "intent": "open_asset", "params": {"asset": asset}}
     if latest_deposit_age is None:
         return {"label": "Review funding options", "intent": "open_funding"}
     return {"label": "Review your Binance.US account", "intent": "open_account_overview"}
@@ -594,17 +728,17 @@ def choose_suggested_action(snapshot: Dict[str, Any], trade_summary: Dict[str, A
 
 def choose_headline(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], tone: str, limited_mode: bool) -> str:
     if snapshot["top_asset"] and watch_insights:
-        return f"{snapshot['top_asset']['asset']} is doing most of the work in your account today, while {watch_insights[0]['asset']} is the most interesting watchlist move."
+        return f"{snapshot['top_asset']['asset']} is driving your account, while {watch_insights[0]['asset']} is the setup worth checking next."
     if snapshot["top_asset"]:
-        return f"{snapshot['top_asset']['asset']} is the main driver of your account today."
+        return f"{snapshot['top_asset']['asset']} is the main driver of your account at {format_price(snapshot['top_asset']['price'])}."
     if trade_summary:
         asset = next(iter(trade_summary.keys()))
         return f"{asset} is the asset to revisit first because it overlaps with your recent trading history."
     if watch_insights:
         lead = watch_insights[0]
         if lead["volume_ratio"] and lead["volume_ratio"] >= 1.8:
-            return f"{lead['asset']} is the most actionable name on your watchlist with {lead['change_pct']:+.1f}% performance and {lead['volume_ratio']:.1f}x volume."
-        return f"{lead['asset']} is the most actionable name on your watchlist at {lead['change_pct']:+.1f}% over 24h."
+            return f"{lead['asset']} is the most actionable name on your watchlist at {format_price(lead['price'])}, with {lead['change_pct']:+.1f}% 24h and {lead['volume_ratio']:.1f}x volume."
+        return f"{lead['asset']} is the most actionable name on your watchlist at {format_price(lead['price'])} ({lead['change_pct']:+.1f}% 24h)."
     if limited_mode:
         return "This is a limited market-only brief. It becomes much more useful once account context is connected."
     return f"Market tone is {tone.replace('_', ' ')}, but your account context is too thin to rank what matters."
@@ -617,9 +751,11 @@ def compose_personalized_highlights(snapshot: Dict[str, Any], trade_summary: Dic
         best = max(holdings, key=lambda item: item["contribution_24h"])
         worst = min(holdings, key=lambda item: item["contribution_24h"])
         if best["usd_value"] > 0:
-            highlights.append({"type": "holding_impact", "asset": best["asset"], "summary": f"{best['asset']} is your strongest 24h contributor at {best['change_pct_24h']:+.1f}%."})
+            week = f", {best['change_pct_7d']:+.1f}% vs 7d" if best.get("change_pct_7d") is not None else ""
+            highlights.append({"type": "holding_impact", "asset": best["asset"], "summary": f"{best['asset']} is your strongest contributor at {format_price(best['price'])} ({best['change_pct_24h']:+.1f}% 24h{week})."})
         if worst["usd_value"] > 0 and worst["asset"] != best["asset"]:
-            highlights.append({"type": "risk_note", "asset": worst["asset"], "summary": f"{worst['asset']} is your weakest 24h contributor at {worst['change_pct_24h']:+.1f}%."})
+            week = f", {worst['change_pct_7d']:+.1f}% vs 7d" if worst.get("change_pct_7d") is not None else ""
+            highlights.append({"type": "risk_note", "asset": worst["asset"], "summary": f"{worst['asset']} is your weakest contributor at {format_price(worst['price'])} ({worst['change_pct_24h']:+.1f}% 24h{week})."})
     if snapshot["cash_ratio"] >= 0.2:
         highlights.append({"type": "idle_cash", "summary": f"Roughly {snapshot['cash_ratio'] * 100:.0f}% of your portfolio is sitting in cash or cash-like balances."})
     if snapshot["concentration"] >= 0.6 and snapshot["top_asset"]:
@@ -641,25 +777,58 @@ def compose_personalized_highlights(snapshot: Dict[str, Any], trade_summary: Dic
     return deduped[:limit]
 
 
+def weekly_reset_sections(snapshot: Dict[str, Any], watch_insights: List[Dict[str, Any]], news_items: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    matters: List[str] = []
+    news: List[str] = []
+    ignore: List[str] = []
+
+    holdings = [h for h in snapshot.get("holdings", []) if h["usd_value"] > 0 and h.get("change_pct_7d") is not None]
+    if holdings:
+        best = max(holdings, key=lambda item: item.get("contribution_7d", 0.0))
+        worst = min(holdings, key=lambda item: item.get("contribution_7d", 0.0))
+        matters.append(
+            f"Your account is roughly {snapshot['week_change_pct']:+.1f}% vs 7d, with {best['asset']} contributing the most at {format_price(best['price'])} ({best['change_pct_7d']:+.1f}% vs 7d)."
+        )
+        if worst["asset"] != best["asset"]:
+            matters.append(
+                f"{worst['asset']} was the biggest weekly drag at {format_price(worst['price'])} ({worst['change_pct_7d']:+.1f}% vs 7d)."
+            )
+    if snapshot["cash_ratio"] >= 0.2:
+        matters.append(f"You still have about {snapshot['cash_ratio'] * 100:.0f}% in cash-like balances, which leaves room to act without selling.")
+    for insight in watch_insights[:1]:
+        if insight.get("change_pct_7d") is not None:
+            matters.append(f"{insight['asset']} is the watchlist name with the strongest weekly follow-through at {insight['change_pct_7d']:+.1f}% vs 7d.")
+
+    for story in news_items[:2]:
+        news.append(f"{story['asset']}: {story['title']} {story['why_this_matters']}")
+        if "price recap" in story["why_this_matters"].lower() or "noise" in story["why_this_matters"].lower():
+            ignore.append(f"{story['asset']}: weekly recap headlines are less useful unless they point to a catalyst you still believe in.")
+
+    if not ignore:
+        ignore.append("Ignore weekly leaderboard chatter that does not change your thesis or your position sizing.")
+
+    return {"what_matters": matters[:4], "news_that_matters": news[:2], "probably_ignore": ignore[:2]}
+
+
 def render_text(payload: Dict[str, Any]) -> str:
-    lines = [payload["title"], "", payload["headline"], ""]
+    lines = [f"**{payload['title']}**", "", payload["headline"], ""]
     if payload.get("limited_mode"):
-        lines.append("Limited mode: account credentials were not available, so this brief is market-only.")
+        lines.append("_Limited mode: account credentials were not available, so this brief is market-only._")
         lines.append("")
 
     sections = payload.get("sections", {})
     if sections.get("what_matters"):
-        lines.append("What matters for you:")
+        lines.append("**What matters for you**")
         for item in sections["what_matters"]:
             lines.append(f"- {item}")
         lines.append("")
     if sections.get("news_that_matters"):
-        lines.append("News that matters:")
+        lines.append("**News that matters**")
         for item in sections["news_that_matters"]:
             lines.append(f"- {item}")
         lines.append("")
     if sections.get("probably_ignore"):
-        lines.append("Probably ignore:")
+        lines.append("**Probably ignore**")
         for item in sections["probably_ignore"]:
             lines.append(f"- {item}")
         lines.append("")
@@ -669,12 +838,12 @@ def render_text(payload: Dict[str, Any]) -> str:
             lines.append(f"- {label}: {item['summary']}")
         lines.append("")
     if payload.get("risk_note"):
-        lines.append(f"Risk: {payload['risk_note']}")
+        lines.append(f"**Risk**  {payload['risk_note']}")
         lines.append("")
     if payload.get("suggested_action"):
-        lines.append(f"Best next step: {payload['suggested_action']['label']}")
+        lines.append(f"**Best next step**  {payload['suggested_action']['label']}")
         lines.append("")
-    lines.append("Market information only. Not financial advice.")
+    lines.append("_Market information only. Not financial advice._")
     return trim_lines("\n".join(lines))
 
 
@@ -757,9 +926,27 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
         else:
             suggested_action = {"label": "Review funding options", "intent": "open_funding"}
     elif args.mode == "weekly_reset":
-        best = mover_list[0]["symbol"] if mover_list else "BTCUSD"
-        headline = f"Weekly reset: {best} led recent momentum while your account stayed {tone.replace('_', ' ')}."
-        suggested_action = {"label": "Open weekly recap", "intent": "open_market_summary"}
+        if snapshot["top_asset"]:
+            headline = f"Over the last week, your account moved about {snapshot['week_change_pct']:+.1f}%, with {snapshot['top_asset']['asset']} still setting the tone."
+        elif watch_insights and watch_insights[0].get("change_pct_7d") is not None:
+            headline = f"Over the last week, {watch_insights[0]['asset']} had the strongest follow-through in your watchlist at {watch_insights[0]['change_pct_7d']:+.1f}% vs 7d."
+        else:
+            best = mover_list[0]["symbol"] if mover_list else "BTCUSD"
+            headline = f"Weekly reset: {best} led recent momentum while the broader tape stayed {tone.replace('_', ' ')}."
+        if snapshot["cash_ratio"] >= 0.2 and watch_insights:
+            suggested_action = {
+                "label": f"You still have {snapshot['cash_ratio'] * 100:.0f}% cash. Revisit {watch_insights[0]['asset']} before the next week starts.",
+                "intent": "open_asset",
+                "params": {"asset": watch_insights[0]["asset"]},
+            }
+        elif watch_insights and watch_insights[0].get("change_pct_7d") is not None:
+            suggested_action = {
+                "label": f"Recheck whether {watch_insights[0]['asset']} still deserves attention after a {watch_insights[0]['change_pct_7d']:+.1f}% week.",
+                "intent": "open_asset",
+                "params": {"asset": watch_insights[0]["asset"]},
+            }
+        else:
+            suggested_action = {"label": "Open the weekly recap and resize any stale positions.", "intent": "open_market_summary"}
     elif args.mode == "portfolio_brief":
         if snapshot["top_asset"]:
             headline = f"{snapshot['top_asset']['asset']} is your largest position, and cash represents about {snapshot['cash_ratio'] * 100:.0f}% of your account."
@@ -789,6 +976,8 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
     elif args.mode == "opportunity_alert" and highlights:
         sections["what_matters"] = [item["summary"] for item in highlights if item["type"] != "news_context"][:2]
         sections["news_that_matters"] = [item["summary"] for item in highlights if item["type"] == "news_context"][:1]
+    elif args.mode == "weekly_reset":
+        sections = weekly_reset_sections(snapshot, watch_insights, news_items)
 
     return {
         "mode": args.mode,
@@ -805,6 +994,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, A
             "cash_ratio": round(snapshot["cash_ratio"], 4),
             "largest_position": snapshot["top_asset"]["asset"] if snapshot["top_asset"] else None,
             "concentration_ratio": round(snapshot["concentration"], 4),
+            "week_change_pct": round(snapshot["week_change_pct"], 2),
         },
         "sections": sections,
         "highlights": highlights[: args.limit],
