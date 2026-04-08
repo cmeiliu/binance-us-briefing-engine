@@ -69,6 +69,26 @@ BINANCE_US_API_KEY=your_key_here
 BINANCE_US_SECRET_KEY=your_secret_here
 ```
 
+Only these exact variable names are supported.
+
+## Safety
+
+This skill is read-only.
+
+It does not:
+
+- place orders
+- convert assets
+- move funds
+- modify account settings
+
+Allowed outbound network domains:
+
+- `api.binance.us`
+- `news.google.com`
+
+The skill reads only user-provided Binance.US credentials and does not embed shared credentials in code.
+
 ## Config
 
 Optional config file:

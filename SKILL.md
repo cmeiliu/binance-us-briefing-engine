@@ -70,13 +70,6 @@ The script will look for Binance.US credentials in this order:
 3. `~/.env`
 4. `.env` in the current workspace
 
-Optional aliases are also supported:
-
-- `BINANCEUS_API_KEY`
-- `BINANCEUS_SECRET_KEY`
-- `BINANCE_API_KEY`
-- `BINANCE_SECRET_KEY`
-
 The script reads only specific keys and does not print raw secrets.
 
 ## Optional Config
@@ -126,3 +119,7 @@ The JSON output is the source of truth. The text output is the delivery-ready re
 - Never claim certainty or guaranteed returns.
 - Do not place trades automatically.
 - If the user requests an action after reading the brief, handle that as a separate explicit step.
+- This skill is read-only. It does not place orders, move funds, or change account settings.
+- Allowed outbound domains are limited to:
+  - `api.binance.us`
+  - `news.google.com`

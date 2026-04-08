@@ -128,8 +128,8 @@ def load_config(path_str: str) -> Dict[str, Any]:
 
 
 def load_secret_from_env_or_files() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    key_names = ["BINANCE_US_API_KEY", "BINANCEUS_API_KEY", "BINANCE_API_KEY"]
-    secret_names = ["BINANCE_US_SECRET_KEY", "BINANCEUS_SECRET_KEY", "BINANCE_SECRET_KEY"]
+    key_names = ["BINANCE_US_API_KEY"]
+    secret_names = ["BINANCE_US_SECRET_KEY"]
 
     api_key = next((os.environ.get(name) for name in key_names if os.environ.get(name)), None)
     secret_key = next((os.environ.get(name) for name in secret_names if os.environ.get(name)), None)
