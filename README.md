@@ -1,6 +1,6 @@
 # Binance.US Briefing Engine
 
-`Binance.US Briefing Engine` is a portable skill workflow for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:
+`Binance.US Briefing Engine` is the headline skill in a small Binance.US skill family for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:
 
 - account balances
 - recent trading history
@@ -16,9 +16,11 @@ The goal is to produce a brief that explains what matters for a specific user, n
 - `portfolio_brief`
 - `watchlist_brief`
 - `opportunity_alert`
-- `funding_nudge`
+- `capital_readiness`
 - `weekly_reset`
+- `asset_research`
 - price-anchored summaries with 24h and 7-day context
+- market context and catalyst-watch sections
 - portfolio-aware news ranking and de-duplicated asset headline search
 - Markdown-friendly text output for chat delivery
 - first-run hook, watchlist-gap prompts, and sharper action-oriented CTAs
@@ -47,12 +49,30 @@ To refresh a copied or GitHub-installed skill later:
 npx skills update
 ```
 
+To discover the full skill family in this repo:
+
+```bash
+npx skills add <github-owner>/<github-repo> --list --full-depth
+```
+
+To install the companion research skill specifically:
+
+```bash
+npx skills add <github-owner>/<github-repo> -g --agent openclaw --yes --full-depth --skill binance-us-asset-research
+```
+
 ### Codex
 
 Codex can use this repo directly. The Codex-facing workflow is documented in [AGENTS.md](/Users/meiliu/codex/binance%20us%20skills/AGENTS.md), and the shared engine is:
 
 ```bash
 python3 scripts/binance_us_brief.py --mode daily_brief --format text
+```
+
+For deeper single-asset work:
+
+```bash
+python3 scripts/binance_us_brief.py --mode asset_research --asset BTC --format text
 ```
 
 ### Claude Code
@@ -75,6 +95,8 @@ From the command line:
 python3 scripts/binance_us_brief.py --mode daily_brief --format text
 python3 scripts/binance_us_brief.py --mode portfolio_brief --format both
 python3 scripts/binance_us_brief.py --mode watchlist_brief --watchlist BTC,ETH,SOL
+python3 scripts/binance_us_brief.py --mode capital_readiness --format text
+python3 scripts/binance_us_brief.py --mode asset_research --asset BTC --format text
 ```
 
 This script is the shared execution layer for OpenClaw, Codex, and Claude Code.
@@ -132,6 +154,17 @@ Create a starter config with:
 ```bash
 python3 scripts/binance_us_brief.py init-config
 ```
+
+## Skill Family
+
+- `binance-us-briefing-engine`: daily brief, watchlist, opportunity, portfolio, weekly, and capital-readiness flows
+- `binance-us-asset-research`: deeper single-asset research for Binance.US-listed assets
+
+The second skill is packaged in:
+
+- [binance-us-asset-research/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/binance-us-asset-research/SKILL.md)
+
+For repos with a root skill, nested skills may require `--full-depth` during discovery or installation.
 
 ## License
 

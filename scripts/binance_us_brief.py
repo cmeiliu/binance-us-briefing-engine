@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 BASE_URL = "https://api.binance.us"
-SKILL_VERSION = "0.2.0"
+SKILL_VERSION = "0.3.0"
 DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine.json"
 DEFAULT_STATE_PATH = Path.home() / ".openclaw" / "binance-us-briefing-engine-state.json"
 DEFAULT_QUOTE_ASSETS = ["USD", "USDT", "USDC", "BTC"]
@@ -111,11 +111,14 @@ def parse_args() -> argparse.Namespace:
             "watchlist_brief",
             "opportunity_alert",
             "funding_nudge",
+            "capital_readiness",
             "weekly_reset",
             "portfolio_brief",
+            "asset_research",
         ],
         default="daily_brief",
     )
+    parser.add_argument("--asset", default="", help="Primary asset for research mode, e.g. BTC")
     parser.add_argument("--format", choices=["json", "text", "both"], default="both")
     parser.add_argument("--watchlist", default="", help="Comma-separated asset tickers, e.g. BTC,ETH,SOL")
     parser.add_argument(
@@ -260,6 +263,16 @@ def normalize_watchlist(cli_watchlist: str, config: Dict[str, Any]) -> List[str]
 def parse_quote_assets(cli_quote_assets: str, config: Dict[str, Any]) -> List[str]:
     values = config.get("quote_assets") or cli_quote_assets.split(",")
     return [str(item).strip().upper() for item in values if str(item).strip()]
+
+
+def primary_asset(args: argparse.Namespace, watchlist: List[str], snapshot: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    if getattr(args, "asset", ""):
+        return str(args.asset).strip().upper()
+    if watchlist:
+        return watchlist[0]
+    if snapshot and snapshot.get("top_asset"):
+        return snapshot["top_asset"]["asset"]
+    return None
 
 
 def build_symbol_maps(exchange_info: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
@@ -605,6 +618,25 @@ def top_market_movers(tickers: Dict[str, Dict[str, Any]], quote_assets: List[str
     return candidates[:limit]
 
 
+def build_market_context(tickers: Dict[str, Dict[str, Any]], mover_list: List[Dict[str, Any]], tone: str) -> List[str]:
+    lines: List[str] = []
+    added_assets = set()
+    for anchor in [("BTC", "BTCUSD"), ("BTC", "BTCUSDT"), ("ETH", "ETHUSD"), ("ETH", "ETHUSDT")]:
+        asset, symbol = anchor
+        if asset in added_assets:
+            continue
+        if symbol in tickers:
+            ticker = tickers[symbol]
+            lines.append(f"{asset} is at {format_price(safe_float(ticker.get('lastPrice')))} ({safe_float(ticker.get('priceChangePercent')):+.1f}% 24h).")
+            added_assets.add(asset)
+            if len(lines) >= 2:
+                break
+    if mover_list:
+        lead = mover_list[0]
+        lines.append(f"Broader tape looks {tone.replace('_', ' ')}. Biggest high-volume move on Binance.US right now is {lead['symbol']} at {lead['change_pct']:+.1f}% over 24h.")
+    return dedupe_lines(lines)[:3]
+
+
 def find_watchlist_insights(watchlist: List[str], by_base: Dict[str, List[Dict[str, Any]]], tickers: Dict[str, Dict[str, Any]], quote_assets: List[str]) -> List[Dict[str, Any]]:
     insights: List[Dict[str, Any]] = []
     for asset in watchlist:
@@ -747,6 +779,30 @@ def fetch_news_context(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], 
     return scored[:news_limit]
 
 
+def upcoming_catalyst_lines(news_items: List[Dict[str, Any]]) -> List[str]:
+    lines: List[str] = []
+    for story in news_items:
+        event_type = event_type_from_title(story["title"])
+        asset = story["asset"]
+        if event_type == "approval":
+            lines.append(f"Watch whether {asset} holds this move after the approval-style headline. If it fades quickly, the market may have already priced it in.")
+        elif event_type == "product_launch":
+            lines.append(f"Watch whether the market treats the {asset} launch or upgrade headline as a real catalyst instead of a one-day pop.")
+        elif event_type == "adoption":
+            lines.append(f"Watch whether the {asset} adoption story turns into follow-through volume. That is the difference between narrative and actual demand.")
+        elif event_type == "security_risk":
+            lines.append(f"Watch whether {asset} stabilizes after the security headline. If fear keeps spreading, patience is cleaner.")
+        elif event_type == "regulatory_risk":
+            lines.append(f"Watch whether regulatory risk around {asset} clears or compounds. That path matters more than today's bounce.")
+        else:
+            lines.append(f"Watch whether the latest {asset} headline turns into a real catalyst. If not, it is probably just conversation.")
+    return dedupe_lines(lines)[:2]
+
+
+def pair_structure(symbol: str, ticker: Dict[str, Any]) -> str:
+    return f"{symbol} is trading about {format_price(safe_float(ticker.get('lastPrice')))} with roughly {format_price(safe_float(ticker.get('quoteVolume')))} in quoted 24h volume on Binance.US."
+
+
 def held_assets(snapshot: Dict[str, Any]) -> List[str]:
     return [item["asset"] for item in snapshot.get("holdings", []) if item.get("usd_value", 0.0) > 1 and item["asset"] not in {"USD", "USDT", "USDC"}]
 
@@ -840,6 +896,51 @@ def build_portfolio_sections(snapshot: Dict[str, Any], trade_summary: Dict[str, 
     }
 
 
+def build_asset_research_sections(
+    asset: str,
+    asset_ctx: Optional[Dict[str, Any]],
+    tickers: Dict[str, Dict[str, Any]],
+    news_items: List[Dict[str, Any]],
+    tone: str,
+) -> Dict[str, List[str]]:
+    overview: List[str] = []
+    structure: List[str] = []
+    context: List[str] = []
+    catalysts: List[str] = []
+    risks: List[str] = []
+
+    if asset_ctx:
+        overview.append(
+            f"{asset} is trading at {format_price(asset_ctx['price'])} with {asset_ctx.get('change_pct', asset_ctx.get('change_pct_24h', 0.0)):+.1f}% over 24h."
+        )
+        if asset_ctx.get("change_pct_7d") is not None:
+            overview.append(f"Over 7d, {asset} is {asset_ctx['change_pct_7d']:+.1f}%.")
+        if asset_ctx.get("is_30d_high"):
+            overview.append(f"{asset} is testing a 30-day high, which means this is a momentum-sensitive setup.")
+        symbol = asset_ctx.get("symbol")
+        if symbol and symbol in tickers:
+            structure.append(pair_structure(symbol, tickers[symbol]))
+        if asset_ctx.get("volume_ratio") and asset_ctx["volume_ratio"] >= 1.8:
+            structure.append(f"Hourly volume is running at {asset_ctx['volume_ratio']:.1f}x baseline, so participation is real.")
+
+    context.extend(build_market_context(tickers, top_market_movers(tickers, DEFAULT_QUOTE_ASSETS, 3), tone)[:2])
+
+    related_news = [item for item in news_items if item.get("asset") == asset] or news_items[:1]
+    for story in related_news[:2]:
+        catalysts.append(f"{story['title']} {story['why_this_matters']}")
+    risks.extend(upcoming_catalyst_lines(related_news))
+    if not risks:
+        risks.append(f"If {asset} cannot hold the current move, the market is telling you the headline was not enough.")
+
+    return {
+        "overview": dedupe_lines(overview)[:3],
+        "market_structure": dedupe_lines(structure)[:2],
+        "market_context": dedupe_lines(context)[:2],
+        "catalyst_watch": dedupe_lines(catalysts)[:2],
+        "risk_factors": dedupe_lines(risks)[:2],
+    }
+
+
 def choose_suggested_action(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], latest_deposit_age: Optional[int], limited_mode: bool) -> Dict[str, Any]:
     if snapshot["concentration"] >= 0.6 and snapshot["top_asset"]:
         asset = snapshot["top_asset"]["asset"]
@@ -929,6 +1030,13 @@ def story_for_asset(asset: Optional[str], news_items: List[Dict[str, Any]]) -> O
     return news_items[0] if news_items else None
 
 
+def best_actionable_story(news_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for item in news_items:
+        if event_type_from_title(item["title"]) != "narrative_only":
+            return item
+    return news_items[0] if news_items else None
+
+
 def event_outcome_frame(asset: str, story: Optional[Dict[str, Any]], asset_ctx: Optional[Dict[str, Any]]) -> Tuple[str, str]:
     if not story:
         price_ref = f" at {format_price(asset_ctx['price'])}" if asset_ctx and asset_ctx.get("price") else ""
@@ -1007,7 +1115,7 @@ def build_decision_frame(
         cash_line = f"You have about {format_price(snapshot['cash_value'])} available." if snapshot.get("cash_value", 0.0) > 0 else "You have room to get prepared."
         if latest_deposit_age is not None:
             cash_line = cash_line[:-1] + f", and your last deposit was about {latest_deposit_age} day(s) ago."
-        story = news_items[0] if news_items else None
+        story = best_actionable_story(news_items)
         catalyst_line = f" Today's key event is `{story['title']}`." if story else ""
         return {
             "title": "What should you do about your cash?",
@@ -1132,9 +1240,39 @@ def render_text(payload: Dict[str, Any]) -> str:
         for item in sections["what_matters"]:
             lines.append(f"- {item}")
         lines.append("")
+    if sections.get("market_context"):
+        lines.append("**Market context**")
+        for item in sections["market_context"]:
+            lines.append(f"- {item}")
+        lines.append("")
     if sections.get("news_that_matters"):
         lines.append("**Why it matters today**")
         for item in sections["news_that_matters"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if sections.get("upcoming_catalysts"):
+        lines.append("**What to watch next**")
+        for item in sections["upcoming_catalysts"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if sections.get("overview"):
+        lines.append("**Overview**")
+        for item in sections["overview"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if sections.get("market_structure"):
+        lines.append("**Market structure**")
+        for item in sections["market_structure"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if sections.get("catalyst_watch"):
+        lines.append("**Catalyst watch**")
+        for item in sections["catalyst_watch"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if sections.get("risk_factors"):
+        lines.append("**Risk factors**")
+        for item in sections["risk_factors"]:
             lines.append(f"- {item}")
         lines.append("")
     if sections.get("probably_ignore"):
@@ -1194,9 +1332,11 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         "daily_brief": "Binance.US Morning Brief",
         "watchlist_brief": "Your Watchlist Brief",
         "opportunity_alert": "Opportunity Alert",
-        "funding_nudge": "Funding Nudge",
+        "funding_nudge": "Capital Readiness",
+        "capital_readiness": "Capital Readiness",
         "weekly_reset": "Weekly Reset",
         "portfolio_brief": "Your Portfolio Brief",
+        "asset_research": "Binance.US Asset Research",
     }
 
     highlights = compose_personalized_highlights(snapshot, trade_summary, watch_insights, news_items, args.limit)
@@ -1239,7 +1379,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         else:
             headline = "No owned, watched, or recently traded asset crossed the configured alert threshold."
             suggested_action = {"label": "Review watchlist thresholds", "intent": "open_watchlist_settings"}
-    elif args.mode == "funding_nudge":
+    elif args.mode in {"funding_nudge", "capital_readiness"}:
         dip_candidate = next((item for item in watch_insights if item["change_pct"] <= -5 or (item.get("change_pct_7d") or 0.0) <= -8), None)
         if latest_deposit_age is None:
             headline = "You do not appear to have a recent completed fiat deposit."
@@ -1286,6 +1426,19 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         else:
             headline = "Portfolio brief unavailable because no non-zero balances were found."
         suggested_action = {"label": "Open Binance.US and make one deliberate portfolio decision now, not later.", "intent": "open_portfolio_actions", "params": {"url": "https://www.binance.us/"}}
+    elif args.mode == "asset_research":
+        asset = primary_asset(args, watchlist, snapshot)
+        asset_ctx = find_asset_context(asset, snapshot, watch_insights) if asset else None
+        if asset and asset_ctx:
+            headline = f"{asset} is the focus. This is a Binance.US-safe research pass built around price action, structure, context, and catalysts."
+            suggested_action = {
+                "label": f"Open Binance.US and decide whether {asset} deserves a spot on your active list.",
+                "intent": "open_asset",
+                "params": {"asset": asset, "url": "https://www.binance.us/"},
+            }
+        else:
+            headline = "Asset research needs a Binance.US-listed asset from --asset or your watchlist."
+            suggested_action = {"label": "Open Binance.US and choose a listed asset to research.", "intent": "open_watchlist", "params": {"url": "https://www.binance.us/"}}
     else:
         headline = choose_headline(snapshot, trade_summary, watch_insights, tone, limited_mode)
 
@@ -1306,6 +1459,8 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         personalization["user_angle"] = LIMITED_MODE_REASON
 
     sections = build_portfolio_sections(snapshot, trade_summary, watch_insights, news_items)
+    sections["market_context"] = build_market_context(tickers, mover_list, tone)
+    sections["upcoming_catalysts"] = upcoming_catalyst_lines(news_items)
     if args.mode == "watchlist_brief":
         sections["what_matters"] = [item["summary"] for item in watch_insights[:4]]
     elif args.mode == "opportunity_alert" and highlights:
@@ -1313,6 +1468,11 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         sections["news_that_matters"] = [item["summary"] for item in highlights if item["type"] == "news_context"][:1]
     elif args.mode == "weekly_reset":
         sections = weekly_reset_sections(snapshot, watch_insights, news_items)
+        sections["market_context"] = build_market_context(tickers, mover_list, tone)
+        sections["upcoming_catalysts"] = upcoming_catalyst_lines(news_items)
+    elif args.mode == "asset_research":
+        asset = primary_asset(args, watchlist, snapshot)
+        sections = build_asset_research_sections(asset, find_asset_context(asset, snapshot, watch_insights) if asset else None, tickers, news_items, tone) if asset else {}
 
     return {
         "mode": args.mode,

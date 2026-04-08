@@ -1,0 +1,7 @@
+interface:
+  display_name: "Binance.US Asset Research"
+  short_description: "Structured research for Binance.US-listed assets"
+  default_prompt: "Use $binance-us-asset-research to research a Binance.US-listed asset and explain the setup, context, catalysts, and risks."
+
+policy:
+  allow_implicit_invocation: true

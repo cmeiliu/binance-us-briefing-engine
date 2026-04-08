@@ -2,7 +2,7 @@
 
 This repository contains a portable Binance.US briefing workflow.
 
-When the user asks for a Binance.US market brief, watchlist recap, opportunity alert, funding nudge, portfolio brief, or weekly reset, run the bundled Python script instead of rebuilding the logic manually.
+When the user asks for a Binance.US market brief, watchlist recap, opportunity alert, capital readiness check, portfolio brief, weekly reset, or deeper asset research, run the bundled Python script instead of rebuilding the logic manually.
 
 ## Entrypoint
 
@@ -15,13 +15,15 @@ Useful modes:
 - `daily_brief`
 - `watchlist_brief`
 - `opportunity_alert`
-- `funding_nudge`
+- `capital_readiness`
 - `weekly_reset`
 - `portfolio_brief`
+- `asset_research`
 
 Useful flags:
 
 - `--watchlist BTC,ETH,SOL`
+- `--asset BTC`
 - `--format text|json|both`
 - `--limit 6`
 - `--news-limit 3`
@@ -41,6 +43,7 @@ Prefer the script's rendered text output for delivery. It already includes:
 
 - actual prices
 - 24h and 7-day framing
+- market context and catalyst watch
 - watchlist gaps
 - cash and funding framing
 - a balanced bull case and case for patience

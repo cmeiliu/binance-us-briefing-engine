@@ -1,8 +1,8 @@
 ---
 name: binance-us-briefing-engine
-description: Personalized Binance.US market, portfolio, and watchlist briefings using account balances, recent trading history, watchlists, market data, and recent news headlines tied to the user's relevant assets. Use when the user asks for a market summary, personalized crypto brief, portfolio update, funding nudge, watchlist recap, opportunity alert, or weekly reset for Binance.US.
+description: Personalized Binance.US market, portfolio, and watchlist briefings using account balances, recent trading history, watchlists, market data, recent news headlines, market context, and catalyst watch tied to the user's relevant assets. Use when the user asks for a market summary, personalized crypto brief, portfolio update, capital readiness check, watchlist recap, opportunity alert, or weekly reset for Binance.US.
 metadata:
-  version: 0.2.0
+  version: 0.3.0
   author: Binance.US
   openclaw:
     skillKey: binance-us-briefing-engine
@@ -21,6 +21,8 @@ The bundled script should prefer:
 
 - price-anchored output over percent-only output
 - 24h plus 7-day framing over single-window commentary
+- market context before portfolio-specific conclusions
+- upcoming catalysts, not just backward-looking news
 - ranked, de-duplicated news tied to held or watched assets
 - a concrete next step over generic portfolio CTA text
 - a conversational advisor tone over compliance-report wording
@@ -34,7 +36,7 @@ The bundled script should prefer:
 - "Give me a portfolio brief"
 - "Do I have idle cash or concentration risk?"
 - "What changed since my recent trades?"
-- "Give me a funding nudge"
+- "Give me a capital readiness check"
 - "Give me a weekly reset"
 
 ## Core Rule
@@ -65,6 +67,8 @@ Common variants:
 python3 scripts/binance_us_brief.py --mode portfolio_brief --format text
 python3 scripts/binance_us_brief.py --mode watchlist_brief --watchlist BTC,ETH,SOL
 python3 scripts/binance_us_brief.py --mode opportunity_alert --alert-threshold-pct 5
+python3 scripts/binance_us_brief.py --mode capital_readiness --format text
+python3 scripts/binance_us_brief.py --mode asset_research --asset BTC --format text
 python3 scripts/binance_us_brief.py init-config
 ```
 
@@ -114,9 +118,10 @@ Useful fields:
 2. Run `portfolio_brief` when the user wants account impact, concentration, or idle cash context.
 3. Run `watchlist_brief` when the user asks about tracked assets.
 4. Use recent news headlines to explain why those assets matter today.
-5. Run `funding_nudge` to connect market setup to deposit readiness.
+5. Run `capital_readiness` to connect market setup to account readiness without sounding like a product push.
 6. Run `opportunity_alert` for trigger-style checks on owned, watched, or recently traded assets.
 7. Run `weekly_reset` for a slower, portfolio-aware recap.
+8. Run `asset_research` when a brief surfaces a setup that needs deeper, structured follow-up.
 
 ## Output Contract
 
