@@ -1,6 +1,6 @@
 # Binance.US Briefing Engine
 
-`Binance.US Briefing Engine` is the headline skill in a small Binance.US skill family for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:
+`Binance.US Briefing Engine` is the headline skill in a Binance.US skill family for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:
 
 - account balances
 - recent trading history
@@ -161,10 +161,16 @@ python3 scripts/binance_us_brief.py init-config
 
 - `binance-us-briefing-engine`: daily brief, watchlist, opportunity, portfolio, weekly, and capital-readiness flows
 - `binance-us-asset-research`: deeper single-asset research for Binance.US-listed assets
+- `binance-us-fund-account`: step-by-step account funding and deposit workflow
+- `binance-us-spot-trade`: deliberate spot-trade review workflow
+- `binance-us-account-status`: balances, deposits, readiness, and blockers
 
-The second skill is packaged in:
+Companion skills are packaged in:
 
 - [binance-us-asset-research/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/binance-us-asset-research/SKILL.md)
+- [binance-us-fund-account/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/binance-us-fund-account/SKILL.md)
+- [binance-us-spot-trade/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/binance-us-spot-trade/SKILL.md)
+- [binance-us-account-status/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/binance-us-account-status/SKILL.md)
 
 For repos with a root skill, nested skills may require `--full-depth` during discovery or installation.
 

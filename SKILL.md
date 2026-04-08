@@ -17,6 +17,13 @@ license: MIT
 
 Generate account-aware Binance.US briefings. This skill is only valuable when it ties the market back to the user's own account.
 
+## When Not To Use
+
+- explicit funding workflows
+- spot-trade execution reviews
+- account-status troubleshooting
+- deep single-asset diligence after the user already picked a coin
+
 The bundled script should prefer:
 
 - price-anchored output over percent-only output
@@ -122,6 +129,7 @@ Useful fields:
 6. Run `opportunity_alert` for trigger-style checks on owned, watched, or recently traded assets.
 7. Run `weekly_reset` for a slower, portfolio-aware recap.
 8. Run `asset_research` when a brief surfaces a setup that needs deeper, structured follow-up.
+9. Hand off to `binance-us-fund-account`, `binance-us-spot-trade`, or `binance-us-account-status` when the user is past the briefing stage and needs an operational workflow.
 
 ## Output Contract
 

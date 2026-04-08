@@ -1,0 +1,7 @@
+interface:
+  display_name: "Binance.US Spot Trade"
+  short_description: "Review-ready spot trading workflow for Binance.US"
+  default_prompt: "Use $binance-us-spot-trade to help me review a Binance.US spot trade and decide the next step."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Binance.US Account Status"
+  short_description: "Balances, deposits, readiness, and blockers on Binance.US"
+  default_prompt: "Use $binance-us-account-status to tell me what is happening in my Binance.US account and whether I am ready to act."
+
+policy:
+  allow_implicit_invocation: true

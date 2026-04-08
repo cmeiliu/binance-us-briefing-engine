@@ -1,0 +1,7 @@
+interface:
+  display_name: "Binance.US Fund Account"
+  short_description: "Funding workflow and deposit guidance for Binance.US"
+  default_prompt: "Use $binance-us-fund-account to explain the safest next step for funding a Binance.US account or checking a pending deposit."
+
+policy:
+  allow_implicit_invocation: true

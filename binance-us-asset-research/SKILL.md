@@ -48,3 +48,9 @@ The output should be structured and Binance.US-safe:
 - a next-step prompt that sends the user back into Binance.US if the asset deserves attention
 
 Keep it informational. Do not present it as guaranteed returns or one-sided trading advice.
+
+## Handoffs
+
+- If the user still needs broad context, hand off back to `binance-us-briefing-engine`.
+- If the user is ready to act, hand off to `binance-us-spot-trade`.
+- If the user is not funded yet, hand off to `binance-us-fund-account`.
