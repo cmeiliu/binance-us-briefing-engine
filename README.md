@@ -1,6 +1,6 @@
 # Binance.US Briefing Engine
 
-`Binance.US Briefing Engine` is an OpenClaw-compatible skill that generates personalized Binance.US briefs using:
+`Binance.US Briefing Engine` is a portable skill workflow for OpenClaw, Codex, and Claude Code. It generates personalized Binance.US briefs using:
 
 - account balances
 - recent trading history
@@ -25,6 +25,8 @@ The goal is to produce a brief that explains what matters for a specific user, n
 
 ## Install
 
+### OpenClaw
+
 Local path:
 
 ```bash
@@ -36,6 +38,20 @@ From GitHub after publishing:
 ```bash
 npx skills add <github-owner>/<github-repo> -g --agent openclaw --yes --copy
 ```
+
+### Codex
+
+Codex can use this repo directly. The Codex-facing workflow is documented in [AGENTS.md](/Users/meiliu/codex/binance%20us%20skills/AGENTS.md), and the shared engine is:
+
+```bash
+python3 scripts/binance_us_brief.py --mode daily_brief --format text
+```
+
+### Claude Code
+
+Claude Code can use the project-local skill wrapper at [.claude/skills/binance-us-briefing-engine/SKILL.md](/Users/meiliu/codex/binance%20us%20skills/.claude/skills/binance-us-briefing-engine/SKILL.md).
+
+It invokes the same bundled Python engine, so behavior stays aligned across agents.
 
 ## Usage
 
@@ -52,6 +68,8 @@ python3 scripts/binance_us_brief.py --mode daily_brief --format text
 python3 scripts/binance_us_brief.py --mode portfolio_brief --format both
 python3 scripts/binance_us_brief.py --mode watchlist_brief --watchlist BTC,ETH,SOL
 ```
+
+This script is the shared execution layer for OpenClaw, Codex, and Claude Code.
 
 ## Credentials
 
