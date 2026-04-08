@@ -1,0 +1,7 @@
+interface:
+  display_name: "Binance.US Briefing Engine"
+  short_description: "Personalized Binance.US market and portfolio briefs"
+  default_prompt: "Use $binance-us-briefing-engine to generate a personalized Binance.US brief from my balances, recent trades, and watchlist."
+
+policy:
+  allow_implicit_invocation: true
