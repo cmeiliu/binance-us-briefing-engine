@@ -891,6 +891,65 @@ def choose_suggested_action(snapshot: Dict[str, Any], trade_summary: Dict[str, A
     return {"label": "Open Binance.US and make one intentional decision instead of waiting passively.", "intent": "open_account_overview", "params": {"url": "https://www.binance.us/"}}
 
 
+def find_asset_context(asset: Optional[str], snapshot: Dict[str, Any], watch_insights: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not asset:
+        return None
+    for item in snapshot.get("holdings", []):
+        if item.get("asset") == asset:
+            return item
+    for item in watch_insights:
+        if item.get("asset") == asset:
+            return item
+    return None
+
+
+def build_decision_frame(
+    suggested_action: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    watch_insights: List[Dict[str, Any]],
+    latest_deposit_age: Optional[int],
+) -> Optional[Dict[str, str]]:
+    intent = suggested_action.get("intent")
+    asset = suggested_action.get("params", {}).get("asset")
+    asset_ctx = find_asset_context(asset, snapshot, watch_insights)
+
+    if intent == "open_portfolio_risk" and asset_ctx:
+        return {
+            "title": f"What should you do about {asset_ctx['asset']}?",
+            "bull_case": f"If you still believe the trend is intact, {asset_ctx['asset']} at {format_price(asset_ctx['price'])} is still carrying your account and may deserve to stay oversized.",
+            "patient_case": f"If you would be uncomfortable with one name driving this much risk, patience means trimming nothing impulsively and deciding your max position size first.",
+        }
+    if intent in {"open_asset", "open_watchlist"} and asset_ctx:
+        bull_bits = [f"{asset_ctx['asset']} is trading at {format_price(asset_ctx['price'])}"]
+        if asset_ctx.get("change_pct") is not None:
+            bull_bits.append(f"{asset_ctx['change_pct']:+.1f}% today")
+        if asset_ctx.get("change_pct_7d") is not None:
+            bull_bits.append(f"{asset_ctx['change_pct_7d']:+.1f}% vs 7d")
+        bull_line = ", ".join(bull_bits) + "."
+        if asset_ctx.get("is_30d_high"):
+            bull_line += " Momentum is strong enough that it is testing a 30-day high."
+        patient_line = "Patience makes sense if this feels extended, the move is mostly headline-driven, or you want to see whether it can hold up for another session."
+        return {
+            "title": f"What should you do about {asset_ctx['asset']}?",
+            "bull_case": bull_line,
+            "patient_case": patient_line,
+        }
+    if intent in {"open_convert_or_spot", "open_funding"}:
+        cash_line = f"You have about {format_price(snapshot['cash_value'])} available." if snapshot.get("cash_value", 0.0) > 0 else "You have room to get prepared."
+        if latest_deposit_age is not None:
+            cash_line = cash_line[:-1] + f", and your last deposit was about {latest_deposit_age} day(s) ago."
+        return {
+            "title": "What should you do about your cash?",
+            "bull_case": f"{cash_line} If you already have conviction in a setup, acting while the market is moving gives that cash a job.",
+            "patient_case": "Patience makes sense if nothing on your list has actually improved, or if you would just be chasing a move because it feels urgent.",
+        }
+    return {
+        "title": "What should you do about this?",
+        "bull_case": "If the setup still matches your thesis, acting now may be better than drifting back into passive waiting.",
+        "patient_case": "If the case is still blurry, patience is valid. Let the market prove more before you commit.",
+    }
+
+
 def choose_headline(snapshot: Dict[str, Any], trade_summary: Dict[str, Any], watch_insights: List[Dict[str, Any]], tone: str, limited_mode: bool) -> str:
     if snapshot["top_asset"] and watch_insights:
         return f"{snapshot['top_asset']['asset']} is driving your account, while {watch_insights[0]['asset']} is the setup worth checking next."
@@ -1023,6 +1082,12 @@ def render_text(payload: Dict[str, Any]) -> str:
     if payload.get("suggested_action"):
         lines.append(f"**What I would do next**  {payload['suggested_action']['label']}")
         lines.append("")
+    if payload.get("decision_frame"):
+        frame = payload["decision_frame"]
+        lines.append(f"**{frame['title']}**")
+        lines.append(f"- Bull case: {frame['bull_case']}")
+        lines.append(f"- Case for patience: {frame['patient_case']}")
+        lines.append("")
     lines.append("_Market information only. Not financial advice._")
     return trim_lines("\n".join(lines))
 
@@ -1150,6 +1215,8 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
     else:
         headline = choose_headline(snapshot, trade_summary, watch_insights, tone, limited_mode)
 
+    decision_frame = build_decision_frame(suggested_action, snapshot, watch_insights, latest_deposit_age)
+
     personalization = {"based_on": [], "user_angle": None}
     if context["balances"]:
         personalization["based_on"].append("balances")
@@ -1195,6 +1262,7 @@ def build_brief(args: argparse.Namespace, config: Dict[str, Any], state: Dict[st
         "first_run_hook": hook,
         "risk_note": risk_note,
         "suggested_action": suggested_action,
+        "decision_frame": decision_frame,
         "watchlist": watchlist,
         "news": news_items,
         "disclaimer": "Market information only. Not financial advice.",
